@@ -247,9 +247,13 @@ func (c *Client) TriggerApi(ctx context.Context) {
 
 	select {
 	case <-time.After(duration):
-		c.Outgoing <- generateResponse(msg)
-		c.ApiCancelFn = nil
-		c.MessageToApi = []byte{}
+		select {
+		case c.Outgoing <- generateResponse(msg):
+			c.ApiCancelFn = nil
+			c.MessageToApi = []byte{}
+		default:
+			return
+		}
 	case <-ctx.Done():
 		return
 	}
