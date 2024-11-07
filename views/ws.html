@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <title>WebSocket</title>
+</head>
+
+<body>
+    <p id="status"></p>
+    <form id="form">
+        <input id="input" />
+    </form>
+
+    <button id="btn">close</button>
+    <button id="btn2">open</button>
+
+    <div id="output">
+        Чат
+    </div>
+
+    <style>
+        p {
+            margin: 0;
+            padding: 0;
+        }
+
+        #output {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .message {
+            display: flex;
+            align-self: flex-start;
+            margin: 0;
+            padding: 0.5rem 0.25rem;
+            background: #ccc;
+            border-radius: 0.25rem;
+            white-space: pre;
+        }
+
+        .processing {
+            opacity: 0.8;
+        }
+
+        .processing:after {
+            content: ' ...';
+        }
+    </style>
+
+    <script>
+        var loc = window.location;
+        var uri = 'ws:';
+
+        if (loc.protocol === 'https:') {
+            uri = 'wss:';
+        }
+        uri += '//' + loc.host;
+        uri += loc.pathname + 'ws';
+
+        const status = document.querySelector('#status');
+
+        function connect() {
+            status.textContent = 'idle';
+
+            ws = new WebSocket(uri);
+
+            let tim;
+
+            ws.onopen = function () {
+                console.log('Connected');
+                status.textContent = 'Connected';
+            }
+
+            ws.onmessage = function (evt) {
+                if (evt.data) {
+                    let parsed;
+
+                    try {
+                        parsed = JSON.parse(evt.data)
+                    } catch (e) {
+                        console.error(e)
+                    }
+
+                    if (parsed.self && parsed.type === "text") {
+                        document.querySelector('#typing')?.remove();
+
+                        const e = document.querySelector(`#${parsed.hash}`);
+
+                        if (e) {
+                            e.classList.remove('processing')
+                        }
+                    } else if (parsed.type === "typing") {
+                        const p = document.createElement('p');
+
+                        p.textContent = parsed.value;
+                        p.id = 'typing';
+
+                        document.querySelector('#output').append(p);
+                    } else if (!parsed.self) {
+                        document.querySelector('#typing')?.remove();
+
+                        const p = document.createElement('p');
+
+                        p.textContent = parsed.value;
+                        p.classList.add('message');
+
+                        document.querySelector('#output').append(p);
+                    }
+                }
+            }
+
+            ws.onclose = function (evt) {
+                console.log('Disconnected');
+                status.textContent = 'Disconnected';
+
+                setTimeout(() => {
+                    connect();
+                }, 1000);
+
+                if (tim) {
+                    clearTimeout(tim);
+                }
+            }
+
+            ws.onerror = function (e) {
+                console.log('error', e);
+
+                status.textContent = 'Error';
+            }
+        }
+
+        connect();
+
+        const _form = document.querySelector('#form');
+        const input = document.querySelector('input');
+        const btn = document.querySelector('#btn');
+
+        const UUID_MASK = 'qxxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx';
+        const UUID_MASK_CHAR_REGEX = /[xy]/g;
+
+        function generateUUID() {
+            let d = new Date().getTime();
+
+            if (
+                typeof performance !== 'undefined' &&
+                typeof performance.now === 'function'
+            ) {
+                d += performance.now(); // use high-precision timer if available
+            }
+
+            return UUID_MASK.replace(UUID_MASK_CHAR_REGEX, (char) => {
+                const rand = (d + Math.random() * 16) % 16 | 0;
+
+                d = Math.floor(d / 16);
+
+                return (char === 'x' ? rand : (rand & 0x3) | 0x8).toString(16);
+            });
+        }
+
+
+        _form.addEventListener('submit', (e) => {
+            e.preventDefault();
+
+            let value = input.value;
+            value = value.trim();
+
+            if (!value) {
+                return;
+            }
+
+            const t = document.createElement('p');
+            const hash = generateUUID();
+
+            t.id = hash;
+            t.textContent = value;
+            t.classList.add('processing', 'message');
+
+            document.querySelector('#output').append(t);
+
+            ws.send(JSON.stringify({ type: 'message', value, hash }));
+
+            input.value = '';
+        });
+
+        btn.onclick = () => {
+            ws.close();
+        }
+    </script>
+</body>
+
+</html>

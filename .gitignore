@@ -1,0 +1,8 @@
+.env
+tmp
+node_modules/
+mongodb/
+cert.pem
+key.pem
+*_templ.go
+pechkin_db
