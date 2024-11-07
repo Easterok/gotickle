@@ -106,18 +106,26 @@ type Client struct {
 
 	Ctx echo.Context
 
+	Shutdown   context.Context
+	ShutdownFn context.CancelFunc
+
 	mu           sync.Mutex
 	MessageToApi []byte
 	ApiCancel    context.CancelFunc
 }
 
-func NewClient(ctx echo.Context, ws *websocket.Conn) *Client {
+func NewClient(ctx context.Context, e echo.Context, ws *websocket.Conn) *Client {
+	shutdown, shutdownFn := context.WithCancel(ctx)
+
 	return &Client{
 		Incoming: make(chan []byte),
 		Outgoing: make(chan []byte),
 		PingPong: time.NewTicker(pingPeriod),
 		Conn:     ws,
-		Ctx:      ctx,
+		Ctx:      e,
+
+		Shutdown:   shutdown,
+		ShutdownFn: shutdownFn,
 	}
 }
 
@@ -141,8 +149,7 @@ func (c *Client) Start() error {
 func (c *Client) Stop() {
 	// fmt.Printf("Closing connection...\n")
 
-	c.Done <- true
-
+	c.ShutdownFn()
 	c.PingPong.Stop()
 	c.Conn.Close()
 }
@@ -152,7 +159,7 @@ func (c *Client) Writer() {
 
 	for {
 		select {
-		case <-c.Done:
+		case <-c.Shutdown.Done():
 			return
 		case msg, ok := <-c.Outgoing:
 			if !ok {
@@ -196,7 +203,7 @@ func (c *Client) Reader() {
 		select {
 		case c.Incoming <- message:
 			//
-		case <-c.Done:
+		case <-c.Shutdown.Done():
 			return
 		}
 	}
@@ -208,12 +215,13 @@ func (c *Client) Handle() {
 			c.ApiCancel()
 		}
 
+		close(c.Outgoing)
 		c.Stop()
 	}()
 
 	for {
 		select {
-		case <-c.Done:
+		case <-c.Shutdown.Done():
 			return
 		case in, ok := <-c.Incoming:
 			if !ok {
@@ -247,7 +255,7 @@ func (c *Client) Handle() {
 			c.mu.Lock()
 			nextMsg := append(c.MessageToApi, []byte("\n"+parsed.Value)...)
 			c.MessageToApi = nextMsg
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := context.WithCancel(c.Shutdown)
 			c.ApiCancel = cancel
 			c.mu.Unlock()
 
@@ -260,35 +268,37 @@ func (c *Client) TriggerApi(ctx context.Context, msg []byte) {
 	randomDuration := 0.1 + rand.Float64()*(2.0-0.1)
 	duration := time.Duration(randomDuration * float64(time.Second))
 
-	select {
-	case <-c.Done:
-		return
-	case <-time.After(duration):
-		resp := generateResponse(msg)
-
+	for {
 		select {
-		case c.Outgoing <- resp:
-			c.mu.Lock()
-			c.MessageToApi = []byte{}
-			c.mu.Unlock()
-		default:
-			break
+		case <-ctx.Done():
+			return
+		case <-time.After(duration):
+			resp := generateResponse(msg)
+
+			select {
+			case c.Outgoing <- resp:
+				c.mu.Lock()
+				c.MessageToApi = []byte{}
+				c.mu.Unlock()
+			default:
+				return
+			}
 		}
-	case <-ctx.Done():
-		break
 	}
 }
 
-func socket(c echo.Context) error {
-	ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+func socket(ctx context.Context) func(c echo.Context) error {
+	return func(c echo.Context) error {
+		ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 
-	if err != nil {
-		return err
+		if err != nil {
+			return err
+		}
+
+		client := NewClient(ctx, c, ws)
+
+		return client.Start()
 	}
-
-	client := NewClient(c, ws)
-
-	return client.Start()
 }
 
 func main() {
@@ -309,7 +319,7 @@ func main() {
 		return c.File("views/ws.html")
 	})
 
-	e.GET("/ws", socket)
+	e.GET("/ws", socket(mainCtx))
 
 	go func() {
 		if err := e.Start(fmt.Sprintf(":%s", port)); err != nil {
