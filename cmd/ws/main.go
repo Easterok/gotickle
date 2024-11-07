@@ -157,7 +157,10 @@ func (c *Client) Writer() {
 			err := c.Conn.WriteMessage(websocket.TextMessage, msg)
 
 			if err != nil {
-				c.Logger().Error(err)
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseAbnormalClosure) {
+					c.Logger().Error(err)
+				}
+
 				return
 			}
 		case <-c.PingPong.C:
