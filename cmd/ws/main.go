@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"easterok.github.com/gotickle/pkg/pprof"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 )
@@ -157,10 +158,7 @@ func (c *Client) Writer() {
 			err := c.Conn.WriteMessage(websocket.TextMessage, msg)
 
 			if err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseAbnormalClosure) {
-					c.Logger().Error(err)
-				}
-
+				c.Logger().Error(err)
 				return
 			}
 		case <-c.PingPong.C:
@@ -289,6 +287,8 @@ func main() {
 	e := echo.New()
 
 	port := "8080"
+
+	pprof.Register(e)
 
 	e.GET("/", func(c echo.Context) error {
 		return c.File("views/ws.html")

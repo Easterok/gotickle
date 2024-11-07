@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	clientCount = 10000
+	clientCount = 20_000
 )
 
 func main() {
@@ -60,7 +60,7 @@ func runClient(clientID int) error {
 	}
 	defer conn.Close()
 
-	messageCount := rand.Intn(2000)
+	messageCount := rand.Intn(200)
 
 	for j := 0; j < messageCount; j++ {
 		msg, _ := json.Marshal(map[string]string{
@@ -78,7 +78,7 @@ func runClient(clientID int) error {
 			return fmt.Errorf("failed to read response: %w", err)
 		}
 
-		log.Printf("Client %d received\n", clientID)
+		// log.Printf("Client %d received\n", clientID)
 
 		time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
 	}
