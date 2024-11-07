@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	clientCount = 20_000
+	clientCount = 15_000
 )
 
 func main() {

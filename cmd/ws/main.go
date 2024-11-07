@@ -98,6 +98,8 @@ type Client struct {
 
 	Outgoing chan []byte
 
+	Done chan bool
+
 	PingPong *time.Ticker
 
 	Conn *websocket.Conn
@@ -139,6 +141,8 @@ func (c *Client) Start() error {
 func (c *Client) Stop() {
 	// fmt.Printf("Closing connection...\n")
 
+	c.Done <- true
+
 	c.PingPong.Stop()
 	c.Conn.Close()
 }
@@ -148,8 +152,9 @@ func (c *Client) Writer() {
 
 	for {
 		select {
+		case <-c.Done:
+			return
 		case msg, ok := <-c.Outgoing:
-
 			if !ok {
 				return
 			}
@@ -188,7 +193,12 @@ func (c *Client) Reader() {
 			return
 		}
 
-		c.Incoming <- message
+		select {
+		case c.Incoming <- message:
+			//
+		case <-c.Done:
+			return
+		}
 	}
 }
 
@@ -202,44 +212,47 @@ func (c *Client) Handle() {
 	}()
 
 	for {
-		in, ok := <-c.Incoming
-
-		if !ok {
+		select {
+		case <-c.Done:
 			return
+		case in, ok := <-c.Incoming:
+			if !ok {
+				return
+			}
+
+			parsed := parseText(in)
+
+			if parsed == nil {
+				c.Logger().Error("unable to parse message %s\n", string(in))
+				continue
+			}
+
+			if parsed.Type != "message" {
+				continue
+			}
+
+			self := responseSelfMessage(parsed)
+
+			if self == nil {
+				continue
+			}
+
+			c.Outgoing <- *self
+			c.Outgoing <- typing()
+
+			if c.ApiCancel != nil {
+				c.ApiCancel()
+			}
+
+			c.mu.Lock()
+			nextMsg := append(c.MessageToApi, []byte("\n"+parsed.Value)...)
+			c.MessageToApi = nextMsg
+			ctx, cancel := context.WithCancel(context.Background())
+			c.ApiCancel = cancel
+			c.mu.Unlock()
+
+			go c.TriggerApi(ctx, nextMsg)
 		}
-
-		parsed := parseText(in)
-
-		if parsed == nil {
-			c.Logger().Error("unable to parse message %s\n", string(in))
-			continue
-		}
-
-		if parsed.Type != "message" {
-			continue
-		}
-
-		self := responseSelfMessage(parsed)
-
-		if self == nil {
-			continue
-		}
-
-		c.Outgoing <- *self
-		c.Outgoing <- typing()
-
-		if c.ApiCancel != nil {
-			c.ApiCancel()
-		}
-
-		c.mu.Lock()
-		nextMsg := append(c.MessageToApi, []byte("\n"+parsed.Value)...)
-		c.MessageToApi = nextMsg
-		ctx, cancel := context.WithCancel(context.Background())
-		c.ApiCancel = cancel
-		c.mu.Unlock()
-
-		go c.TriggerApi(ctx, nextMsg)
 	}
 }
 
@@ -248,6 +261,8 @@ func (c *Client) TriggerApi(ctx context.Context, msg []byte) {
 	duration := time.Duration(randomDuration * float64(time.Second))
 
 	select {
+	case <-c.Done:
+		return
 	case <-time.After(duration):
 		resp := generateResponse(msg)
 
