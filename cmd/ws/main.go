@@ -215,7 +215,7 @@ func (c *Client) Handle() {
 			c.ApiCancel()
 		}
 
-		// close(c.Outgoing)
+		close(c.Outgoing)
 		c.Stop()
 	}()
 
@@ -266,18 +266,23 @@ func (c *Client) TriggerApi(ctx context.Context, msg []byte) {
 	randomDuration := 0.1 + rand.Float64()*(2.0-0.1)
 	duration := time.Duration(randomDuration * float64(time.Second))
 
+	t := time.NewTimer(duration)
+
+	defer t.Stop()
+
 	for {
 		select {
 		case <-c.Shutdown.Done():
 			return
 		case <-ctx.Done():
 			return
-		case <-time.After(duration):
+		case <-t.C:
 			resp := generateResponse(msg)
 
 			select {
 			case c.Outgoing <- resp:
 				c.MessageToApi = []byte{}
+				return
 			default:
 				return
 			}
