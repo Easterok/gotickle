@@ -1,18 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
-	"math/rand"
 	"net/http"
-	"sync"
+	"os"
 	"time"
 
 	_ "net/http/pprof"
 
 	"github.com/gorilla/websocket"
+	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
 )
 
@@ -83,11 +85,11 @@ func typing() []byte {
 	return b
 }
 
-func generateResponse(msg []byte) []byte {
+func generateResponse(msg string) []byte {
 	self := ResponseSocketMessage{
 		Self: false,
 		Hash: "-1",
-		Text: fmt.Sprintf("Response for message: %s", string(msg)),
+		Text: msg,
 		Type: "text",
 	}
 
@@ -107,10 +109,11 @@ type Client struct {
 
 	Ctx echo.Context
 
+	HttpClient *http.Client
+
 	Shutdown   context.Context
 	ShutdownFn context.CancelFunc
 
-	mu           sync.Mutex
 	MessageToApi []byte
 	ApiCancel    context.CancelFunc
 }
@@ -122,6 +125,8 @@ func NewClient(ws *websocket.Conn) *Client {
 		Incoming: make(chan []byte, 256),
 		Outgoing: make(chan []byte, 256),
 		Conn:     ws,
+
+		HttpClient: &http.Client{},
 
 		Shutdown:   shutdown,
 		ShutdownFn: shutdownFn,
@@ -263,27 +268,62 @@ outer:
 	}
 }
 
+type ApiResponse struct {
+	Response string `json:"response"`
+}
+
 func (c *Client) TriggerApi(ctx context.Context, msg []byte) {
-	randomDuration := 0.1 + rand.Float64()*(2.0-0.1)
-	duration := time.Duration(randomDuration * float64(time.Second))
+	data, err := json.Marshal(map[string]string{
+		"messages": string(msg),
+	})
+
+	if err != nil {
+		fmt.Printf("Failed to create json %s", err.Error())
+		return
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", os.Getenv("API_ENDPOINT"), bytes.NewBuffer(data))
+
+	if err != nil {
+		fmt.Printf("Failed to create request %s", err.Error())
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HttpClient.Do(req)
+	if err != nil {
+		if ctx.Err() == context.Canceled {
+			fmt.Println("Request was canceled")
+		} else {
+			fmt.Println("Error making request:", err)
+		}
+		return
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Println("Error reading response body:", err)
+		return
+	}
+
+	d := new(ApiResponse)
+	err = json.Unmarshal(body, &d)
+
+	if err != nil {
+		fmt.Printf("Failed to unmarshal response %s\n", err.Error())
+		return
+	}
 
 outer:
 	for {
 		select {
 		case <-c.Shutdown.Done():
 			break outer
-		case <-ctx.Done():
+		case c.Outgoing <- generateResponse(d.Response):
+			c.MessageToApi = []byte{}
 			break outer
-		case <-time.After(duration):
-			resp := generateResponse(msg)
-
-			select {
-			case c.Outgoing <- resp:
-				c.MessageToApi = []byte{}
-				break outer
-			default:
-				break outer
-			}
+		default:
+			break outer
 		}
 	}
 }
@@ -308,6 +348,12 @@ func socket(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	err := godotenv.Load()
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	port := "8080"
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

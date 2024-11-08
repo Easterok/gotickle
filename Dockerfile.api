@@ -1,0 +1,18 @@
+FROM golang:latest
+
+ENV GO111MODULE=on
+
+WORKDIR /home/app
+
+COPY go.mod /home/app
+COPY go.sum /home/app
+
+RUN go mod download
+
+COPY . .
+
+RUN go build -ldflags "-s" -o /home/app/bin/api cmd/api/main.go
+
+EXPOSE 8081
+
+ENTRYPOINT ["/home/app/bin/api"]
