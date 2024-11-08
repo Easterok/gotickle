@@ -100,8 +100,6 @@ type Client struct {
 
 	Done chan bool
 
-	PingPong *time.Ticker
-
 	Conn *websocket.Conn
 
 	Ctx echo.Context
@@ -114,13 +112,12 @@ type Client struct {
 	ApiCancel    context.CancelFunc
 }
 
-func NewClient(ctx context.Context, e echo.Context, ws *websocket.Conn) *Client {
-	shutdown, shutdownFn := context.WithCancel(ctx)
+func NewClient(e echo.Context, ws *websocket.Conn) *Client {
+	shutdown, shutdownFn := context.WithCancel(context.Background())
 
 	return &Client{
-		Incoming: make(chan []byte),
-		Outgoing: make(chan []byte),
-		PingPong: time.NewTicker(pingPeriod),
+		Incoming: make(chan []byte, 256),
+		Outgoing: make(chan []byte, 256),
 		Conn:     ws,
 		Ctx:      e,
 
@@ -150,12 +147,16 @@ func (c *Client) Stop() {
 	// fmt.Printf("Closing connection...\n")
 
 	c.ShutdownFn()
-	c.PingPong.Stop()
 	c.Conn.Close()
 }
 
 func (c *Client) Writer() {
-	defer c.Stop()
+	pingPong := time.NewTicker(pingPeriod)
+
+	defer func() {
+		pingPong.Stop()
+		c.Stop()
+	}()
 
 	for {
 		select {
@@ -173,7 +174,7 @@ func (c *Client) Writer() {
 				c.Logger().Error(err)
 				return
 			}
-		case <-c.PingPong.C:
+		case <-pingPong.C:
 			// fmt.Println("Sending ping message...")
 			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
@@ -202,8 +203,9 @@ func (c *Client) Reader() {
 
 		select {
 		case c.Incoming <- message:
-			//
 		case <-c.Shutdown.Done():
+			return
+		default:
 			return
 		}
 	}
@@ -215,7 +217,6 @@ func (c *Client) Handle() {
 			c.ApiCancel()
 		}
 
-		close(c.Outgoing)
 		c.Stop()
 	}()
 
@@ -266,17 +267,13 @@ func (c *Client) TriggerApi(ctx context.Context, msg []byte) {
 	randomDuration := 0.1 + rand.Float64()*(2.0-0.1)
 	duration := time.Duration(randomDuration * float64(time.Second))
 
-	t := time.NewTimer(duration)
-
-	defer t.Stop()
-
 	for {
 		select {
 		case <-c.Shutdown.Done():
 			return
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-time.After(duration):
 			resp := generateResponse(msg)
 
 			select {
@@ -290,18 +287,16 @@ func (c *Client) TriggerApi(ctx context.Context, msg []byte) {
 	}
 }
 
-func socket(ctx context.Context) func(c echo.Context) error {
-	return func(c echo.Context) error {
-		ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+func socket(c echo.Context) error {
+	ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 
-		if err != nil {
-			return err
-		}
-
-		client := NewClient(ctx, c, ws)
-
-		return client.Start()
+	if err != nil {
+		return err
 	}
+
+	client := NewClient(c, ws)
+
+	return client.Start()
 }
 
 func main() {
@@ -322,7 +317,7 @@ func main() {
 		return c.File("views/ws.html")
 	})
 
-	e.GET("/ws", socket(mainCtx))
+	e.GET("/ws", socket)
 
 	go func() {
 		if err := e.Start(fmt.Sprintf(":%s", port)); err != nil {
