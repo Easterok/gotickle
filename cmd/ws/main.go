@@ -215,7 +215,7 @@ func (c *Client) Handle() {
 			c.ApiCancel()
 		}
 
-		close(c.Outgoing)
+		// close(c.Outgoing)
 		c.Stop()
 	}()
 
