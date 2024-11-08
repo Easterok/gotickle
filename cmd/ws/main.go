@@ -202,6 +202,8 @@ outer:
 
 		select {
 		case c.Incoming <- message:
+		case <-c.Shutdown.Done():
+			break outer
 		default:
 			break outer
 		}
@@ -220,6 +222,8 @@ func (c *Client) Handle() {
 outer:
 	for {
 		select {
+		case <-c.Shutdown.Done():
+			break outer
 		case in, ok := <-c.Incoming:
 			if !ok {
 				break outer
