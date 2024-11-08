@@ -294,7 +294,7 @@ func (c *Client) TriggerApi(ctx context.Context, msg []byte) {
 	resp, err := c.HttpClient.Do(req)
 	if err != nil {
 		if ctx.Err() == context.Canceled {
-			fmt.Println("Request was canceled")
+			// fmt.Println("Request was canceled")
 		} else {
 			fmt.Println("Error making request:", err)
 		}
