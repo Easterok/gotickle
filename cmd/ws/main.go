@@ -215,6 +215,7 @@ func (c *Client) Handle() {
 			c.ApiCancel()
 		}
 
+		close(c.Outgoing)
 		c.Stop()
 	}()
 
@@ -251,12 +252,10 @@ func (c *Client) Handle() {
 				c.ApiCancel()
 			}
 
-			c.mu.Lock()
 			nextMsg := append(c.MessageToApi, []byte("\n"+parsed.Value)...)
 			c.MessageToApi = nextMsg
-			ctx, cancel := context.WithCancel(c.Shutdown)
+			ctx, cancel := context.WithCancel(context.Background())
 			c.ApiCancel = cancel
-			c.mu.Unlock()
 
 			go c.TriggerApi(ctx, nextMsg)
 		}
@@ -269,6 +268,8 @@ func (c *Client) TriggerApi(ctx context.Context, msg []byte) {
 
 	for {
 		select {
+		case <-c.Shutdown.Done():
+			return
 		case <-ctx.Done():
 			return
 		case <-time.After(duration):
@@ -276,9 +277,7 @@ func (c *Client) TriggerApi(ctx context.Context, msg []byte) {
 
 			select {
 			case c.Outgoing <- resp:
-				c.mu.Lock()
 				c.MessageToApi = []byte{}
-				c.mu.Unlock()
 			default:
 				return
 			}
