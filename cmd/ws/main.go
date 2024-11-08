@@ -4,14 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/rand"
-	"os"
-	"os/signal"
+	"net/http"
 	"sync"
-	"syscall"
 	"time"
 
-	"easterok.github.com/gotickle/pkg/pprof"
+	_ "net/http/pprof"
+
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 )
@@ -24,7 +24,10 @@ const (
 	pingPeriod = (pongWait * 9) / 10
 )
 
-var upgrader = websocket.Upgrader{}
+var wsUpgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+}
 
 type SocketMessage struct {
 	Hash  string `json:"hash"`
@@ -112,22 +115,17 @@ type Client struct {
 	ApiCancel    context.CancelFunc
 }
 
-func NewClient(e echo.Context, ws *websocket.Conn) *Client {
+func NewClient(ws *websocket.Conn) *Client {
 	shutdown, shutdownFn := context.WithCancel(context.Background())
 
 	return &Client{
 		Incoming: make(chan []byte, 256),
 		Outgoing: make(chan []byte, 256),
 		Conn:     ws,
-		Ctx:      e,
 
 		Shutdown:   shutdown,
 		ShutdownFn: shutdownFn,
 	}
-}
-
-func (c *Client) Logger() echo.Logger {
-	return (c.Ctx).Logger()
 }
 
 func (c *Client) Start() error {
@@ -164,6 +162,7 @@ func (c *Client) Writer() {
 			return
 		case msg, ok := <-c.Outgoing:
 			if !ok {
+				c.Conn.WriteMessage(websocket.CloseMessage, nil)
 				return
 			}
 
@@ -171,14 +170,13 @@ func (c *Client) Writer() {
 			err := c.Conn.WriteMessage(websocket.TextMessage, msg)
 
 			if err != nil {
-				c.Logger().Error(err)
+				fmt.Println(err)
 				return
 			}
 		case <-pingPong.C:
-			// fmt.Println("Sending ping message...")
 			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				c.Logger().Error(err)
+				fmt.Println(err)
 				return
 			}
 		}
@@ -191,22 +189,21 @@ func (c *Client) Reader() {
 		c.Stop()
 	}()
 
+outer:
 	for {
 		_, message, err := c.Conn.ReadMessage()
 
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				c.Logger().Error(err)
+				fmt.Println(err)
 			}
-			return
+			break
 		}
 
 		select {
 		case c.Incoming <- message:
-		case <-c.Shutdown.Done():
-			return
 		default:
-			return
+			break outer
 		}
 	}
 }
@@ -220,19 +217,18 @@ func (c *Client) Handle() {
 		c.Stop()
 	}()
 
+outer:
 	for {
 		select {
-		case <-c.Shutdown.Done():
-			return
 		case in, ok := <-c.Incoming:
 			if !ok {
-				return
+				break outer
 			}
 
 			parsed := parseText(in)
 
 			if parsed == nil {
-				c.Logger().Error("unable to parse message %s\n", string(in))
+				fmt.Printf("unable to parse message %s\n", string(in))
 				continue
 			}
 
@@ -267,67 +263,65 @@ func (c *Client) TriggerApi(ctx context.Context, msg []byte) {
 	randomDuration := 0.1 + rand.Float64()*(2.0-0.1)
 	duration := time.Duration(randomDuration * float64(time.Second))
 
+outer:
 	for {
 		select {
 		case <-c.Shutdown.Done():
-			return
+			break outer
 		case <-ctx.Done():
-			return
+			break outer
 		case <-time.After(duration):
 			resp := generateResponse(msg)
 
 			select {
 			case c.Outgoing <- resp:
 				c.MessageToApi = []byte{}
-				return
+				break outer
 			default:
-				return
+				break outer
 			}
 		}
 	}
 }
 
-func socket(c echo.Context) error {
-	ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+func socket(w http.ResponseWriter, r *http.Request) {
+	ws, err := wsUpgrader.Upgrade(w, r, nil)
 
 	if err != nil {
-		return err
+		log.Println(err)
+
+		return
 	}
 
-	client := NewClient(c, ws)
+	client := NewClient(ws)
 
-	return client.Start()
+	client.Conn.SetReadDeadline(time.Now().Add(pongWait))
+	client.Conn.SetPongHandler(func(string) error { client.Conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
+
+	go client.Writer()
+	go client.Handle()
+	go client.Reader()
 }
 
 func main() {
-	var stop context.CancelFunc
-
-	mainCtx := context.Background()
-	mainCtx, stop = signal.NotifyContext(mainCtx, os.Interrupt, syscall.SIGTERM)
-
-	defer stop()
-
-	e := echo.New()
-
 	port := "8080"
 
-	pprof.Register(e)
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
 
-	e.GET("/", func(c echo.Context) error {
-		return c.File("views/ws.html")
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+
+			return
+		}
+
+		http.ServeFile(w, r, "views/ws.html")
 	})
 
-	e.GET("/ws", socket)
+	http.HandleFunc("/ws", socket)
 
-	go func() {
-		if err := e.Start(fmt.Sprintf(":%s", port)); err != nil {
-			e.Logger.Fatal("Shutting down the server")
-		}
-	}()
-
-	<-mainCtx.Done()
-
-	if err := e.Shutdown(mainCtx); err != nil {
-		e.Logger.Fatal(err)
-	}
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))
 }

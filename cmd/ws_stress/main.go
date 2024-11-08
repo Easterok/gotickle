@@ -60,7 +60,7 @@ func runClient(clientID int) error {
 	}
 	defer conn.Close()
 
-	messageCount := rand.Intn(200)
+	messageCount := rand.Intn(2000)
 
 	for j := 0; j < messageCount; j++ {
 		msg, _ := json.Marshal(map[string]string{
