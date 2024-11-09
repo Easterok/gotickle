@@ -190,7 +190,7 @@ func (c *Client) Writer() {
 			return
 		case msg, ok := <-c.Outgoing:
 			if !ok {
-				c.Conn.WriteMessage(websocket.CloseMessage, nil)
+				// c.Conn.WriteMessage(websocket.CloseMessage, nil)
 				return
 			}
 
@@ -198,7 +198,7 @@ func (c *Client) Writer() {
 			err := c.Conn.WriteMessage(websocket.TextMessage, msg)
 
 			if err != nil {
-				fmt.Println(err)
+				// fmt.Println(err)
 				return
 			}
 
@@ -206,7 +206,7 @@ func (c *Client) Writer() {
 		case <-pingPong.C:
 			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				fmt.Println(err)
+				// fmt.Println(err)
 				return
 			}
 		}
@@ -225,7 +225,7 @@ outer:
 
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				fmt.Println(err)
+				// fmt.Println(err)
 			}
 			break
 		}
