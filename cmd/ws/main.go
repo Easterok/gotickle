@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,13 +8,16 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	_ "net/http/pprof"
 
+	"easterok.github.com/gotickle/pkg/llm"
+	"easterok.github.com/gotickle/pkg/stats"
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
-	"github.com/labstack/echo/v4"
 )
 
 const (
@@ -25,6 +27,8 @@ const (
 	pongWait   = 60 * time.Second
 	pingPeriod = (pongWait * 9) / 10
 )
+
+var statistic *stats.Stats
 
 var wsUpgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
@@ -42,6 +46,11 @@ type ResponseSocketMessage struct {
 	Text string `json:"value"`
 	Type string `json:"type"`
 	Self bool   `json:"self"`
+}
+
+type ResponseSocketErrorMessage struct {
+	Type      string `json:"type"`
+	RequestId string `json:"request_id"`
 }
 
 func parseText(b []byte) *SocketMessage {
@@ -85,10 +94,33 @@ func typing() []byte {
 	return b
 }
 
-func generateResponse(msg string) []byte {
+func generateErrorResponse() []byte {
+	self := ResponseSocketErrorMessage{
+		Type: "response_error",
+	}
+
+	b, _ := json.Marshal(self)
+
+	return b
+}
+
+func generateRegenerateResponse(msg string, id string) []byte {
 	self := ResponseSocketMessage{
 		Self: false,
-		Hash: "-1",
+		Hash: id,
+		Text: msg,
+		Type: "regenerate_response",
+	}
+
+	b, _ := json.Marshal(self)
+
+	return b
+}
+
+func generateResponse(msg string, id string) []byte {
+	self := ResponseSocketMessage{
+		Self: false,
+		Hash: id,
 		Text: msg,
 		Type: "text",
 	}
@@ -103,19 +135,15 @@ type Client struct {
 
 	Outgoing chan []byte
 
-	Done chan bool
-
 	Conn *websocket.Conn
 
-	Ctx echo.Context
-
-	HttpClient *http.Client
+	HttpClient  *http.Client
+	HttpContext *llm.Context
 
 	Shutdown   context.Context
 	ShutdownFn context.CancelFunc
 
-	MessageToApi []byte
-	ApiCancel    context.CancelFunc
+	ApiCancel context.CancelFunc
 }
 
 func NewClient(ws *websocket.Conn) *Client {
@@ -127,23 +155,18 @@ func NewClient(ws *websocket.Conn) *Client {
 		Conn:     ws,
 
 		HttpClient: &http.Client{},
+		HttpContext: &llm.Context{
+			HistoryBuffer: llm.ABuffer[*llm.Message]{
+				Size: 30,
+				Buff: make([]*llm.Message, 0, 30),
+			},
+			SystemPrompt: "You are a school teacher",
+			UserPrompt:   "Please, get me a new answer for that question",
+		},
 
 		Shutdown:   shutdown,
 		ShutdownFn: shutdownFn,
 	}
-}
-
-func (c *Client) Start() error {
-	c.Conn.SetReadDeadline(time.Now().Add(pongWait))
-	c.Conn.SetPongHandler(func(string) error { c.Conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
-
-	// fmt.Printf("New client\n")
-
-	go c.Writer()
-	go c.Handle()
-	go c.Reader()
-
-	return nil
 }
 
 func (c *Client) Stop() {
@@ -178,6 +201,8 @@ func (c *Client) Writer() {
 				fmt.Println(err)
 				return
 			}
+
+			atomic.AddInt64(&statistic.MessagesSent, 1)
 		case <-pingPong.C:
 			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
@@ -207,6 +232,7 @@ outer:
 
 		select {
 		case c.Incoming <- message:
+			atomic.AddInt64(&statistic.MessagesReceived, 1)
 		case <-c.Shutdown.Done():
 			break outer
 		default:
@@ -215,7 +241,7 @@ outer:
 	}
 }
 
-func (c *Client) Handle() {
+func (c *Client) Handler() {
 	defer func() {
 		if c.ApiCancel != nil {
 			c.ApiCancel()
@@ -241,29 +267,41 @@ outer:
 				continue
 			}
 
-			if parsed.Type != "message" {
+			if parsed.Type != "message" && parsed.Type != "retry" && parsed.Type != "regenerate" {
 				continue
 			}
 
-			self := responseSelfMessage(parsed)
+			regenerateId := ""
 
-			if self == nil {
-				continue
+			if parsed.Type == "message" {
+				self := responseSelfMessage(parsed)
+
+				if self == nil {
+					continue
+				}
+
+				c.Outgoing <- *self
+				c.Outgoing <- typing()
+
+				c.HttpContext.Push(&llm.Message{
+					Id:     parsed.Hash,
+					Text:   parsed.Value,
+					Answer: false,
+				})
+			} else if parsed.Type == "regenerate" {
+				regenerateId = parsed.Hash
+			} else if parsed.Type == "retry" {
+				c.Outgoing <- typing()
 			}
-
-			c.Outgoing <- *self
-			c.Outgoing <- typing()
 
 			if c.ApiCancel != nil {
 				c.ApiCancel()
 			}
 
-			nextMsg := append(c.MessageToApi, []byte("\n"+parsed.Value)...)
-			c.MessageToApi = nextMsg
 			ctx, cancel := context.WithCancel(context.Background())
 			c.ApiCancel = cancel
 
-			go c.TriggerApi(ctx, nextMsg)
+			go c.TriggerApi(ctx, regenerateId)
 		}
 	}
 }
@@ -272,17 +310,15 @@ type ApiResponse struct {
 	Response string `json:"response"`
 }
 
-func (c *Client) TriggerApi(ctx context.Context, msg []byte) {
-	data, err := json.Marshal(map[string]string{
-		"messages": string(msg),
-	})
+func (c *Client) TriggerApi(ctx context.Context, regenerateId string) {
+	data, err := c.HttpContext.MakeBody(regenerateId)
 
 	if err != nil {
-		fmt.Printf("Failed to create json %s", err.Error())
+		fmt.Printf("Failed to create body %s", err.Error())
 		return
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", os.Getenv("API_ENDPOINT"), bytes.NewBuffer(data))
+	req, err := http.NewRequestWithContext(ctx, "POST", os.Getenv("API_ENDPOINT"), data)
 
 	if err != nil {
 		fmt.Printf("Failed to create request %s", err.Error())
@@ -292,16 +328,31 @@ func (c *Client) TriggerApi(ctx context.Context, msg []byte) {
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.HttpClient.Do(req)
-	if err != nil {
+	if err != nil || resp.StatusCode != http.StatusOK {
 		if ctx.Err() == context.Canceled {
 			// fmt.Println("Request was canceled")
 		} else {
-			fmt.Println("Error making request:", err)
+			atomic.AddInt64(&statistic.ErrorCount, 1)
+
+			// fmt.Printf("ApiError returned status %s, errMsg: %s\n", resp.Status, err)
+
+			if regenerateId == "" {
+				select {
+				case <-c.Shutdown.Done():
+					return
+				case c.Outgoing <- generateErrorResponse():
+					return
+				default:
+					return
+				}
+			}
 		}
+
 		return
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		atomic.AddInt64(&statistic.ErrorCount, 1)
 		fmt.Println("Error reading response body:", err)
 		return
 	}
@@ -310,8 +361,20 @@ func (c *Client) TriggerApi(ctx context.Context, msg []byte) {
 	err = json.Unmarshal(body, &d)
 
 	if err != nil {
+		atomic.AddInt64(&statistic.ErrorCount, 1)
 		fmt.Printf("Failed to unmarshal response %s\n", err.Error())
 		return
+	}
+
+	var r []byte
+	id := regenerateId
+	txt := d.Response
+
+	if regenerateId == "" {
+		id = uuid.NewString()
+		r = generateResponse(txt, id)
+	} else {
+		r = generateRegenerateResponse(txt, regenerateId)
 	}
 
 outer:
@@ -319,8 +382,16 @@ outer:
 		select {
 		case <-c.Shutdown.Done():
 			break outer
-		case c.Outgoing <- generateResponse(d.Response):
-			c.MessageToApi = []byte{}
+		case c.Outgoing <- r:
+			if regenerateId != "" {
+				c.HttpContext.UpdateText(id, txt)
+			} else {
+				c.HttpContext.Push(&llm.Message{
+					Answer: true,
+					Id:     id,
+					Text:   txt,
+				})
+			}
 			break outer
 		default:
 			break outer
@@ -337,14 +408,22 @@ func socket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	atomic.AddInt64(&statistic.LiveConn, 1)
+	atomic.AddInt64(&statistic.TotalConn, 1)
+
+	defer func() {
+		atomic.AddInt64(&statistic.LiveConn, -1)
+	}()
+
 	client := NewClient(ws)
 
 	client.Conn.SetReadDeadline(time.Now().Add(pongWait))
 	client.Conn.SetPongHandler(func(string) error { client.Conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
 
 	go client.Writer()
-	go client.Handle()
-	go client.Reader()
+	go client.Handler()
+
+	client.Reader()
 }
 
 func main() {
@@ -354,7 +433,18 @@ func main() {
 		log.Fatal(err)
 	}
 
+	statistic = stats.NewStatsWithConfig(stats.StatsConfig{
+		SnapshotInterval: time.Minute,
+		SnapshotCallback: func(s *stats.Stats) {
+			fmt.Printf("-----\nTime:%s\nTotalConnections: %d\nLiveConnections: %d\nMessagesSent: %d\nMessagesReceived: %d\nApiErrors: %d\n-----\n", time.Now().UTC().Format("2006-01-02 15:04:05"), s.TotalConn, s.LiveConn, s.MessagesSent, s.MessagesReceived, s.ErrorCount)
+		},
+	})
+
 	port := "8080"
+
+	defer statistic.Stop()
+
+	go statistic.Start()
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {

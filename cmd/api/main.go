@@ -4,19 +4,22 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
 )
 
 type Request struct {
-	Messages string `json:"messages"`
+	UserPrompt   string `json:"user_prompt"`
+	SystemPrompt string `json:"system_prompt"`
+	History      string `json:"history"`
 }
 
 func main() {
 	e := echo.New()
-	e.Use(middleware.Logger())
+	// e.Use(middleware.Logger())
 
 	e.POST("/", func(c echo.Context) error {
 		u := new(Request)
@@ -34,8 +37,19 @@ func main() {
 
 		time.Sleep(duration)
 
+		badly := rand.Intn(2)
+
+		if badly == 1 {
+			return c.JSON(http.StatusBadRequest, map[string]string{
+				"error": "Bad Request",
+			})
+		}
+
+		id := uuid.NewString()
+		hash := strings.Split(id, "-")[0]
+
 		return c.JSON(http.StatusOK, map[string]string{
-			"response": fmt.Sprintf("Response for message: %s", u.Messages),
+			"response": fmt.Sprintf("blablabla %s", hash),
 		})
 	})
 

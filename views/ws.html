@@ -29,17 +29,31 @@
             display: flex;
             flex-direction: column;
             gap: 0.5rem;
+            height: 600px;
+            max-height: 600px;
+            border: 1px solid red;
+            max-width: 400px;
+            overflow: auto;
+            padding: 0.5rem;
         }
 
         .message {
             display: flex;
-            align-self: flex-start;
+            flex-direction: column;
+            align-self: flex-end;
             margin: 0;
-            padding: 0.5rem 0.25rem;
-            background: #ccc;
-            border-radius: 0.25rem;
+            padding: 0.25rem 0.5rem;
+            background: #2d6bca;
+            color: white;
+            border-radius: 0.5rem;
             white-space: pre;
         }
+
+        .message[data-resp] {
+            align-self: flex-start;
+            background: #e01d57;
+        }
+
 
         .processing {
             opacity: 0.8;
@@ -62,6 +76,10 @@
 
         const status = document.querySelector('#status');
 
+        function scroll() {
+            document.querySelector('#output').scrollTo({ top: 9999999999999 });
+        }
+
         function connect() {
             status.textContent = 'idle';
 
@@ -74,6 +92,18 @@
                 status.textContent = 'Connected';
             }
 
+            function onRegenerate(e) {
+                e.preventDefault();
+
+                const msgId = e.target.getAttribute('data-message-id');
+                ws.send(JSON.stringify({ type: 'regenerate', hash: msgId }));
+            }
+
+            function tryRestoreError(e) {
+                e.preventDefault();
+                ws.send(JSON.stringify({ type: 'retry' }));
+            }
+
             ws.onmessage = function (evt) {
                 if (evt.data) {
                     let parsed;
@@ -84,9 +114,10 @@
                         console.error(e)
                     }
 
-                    if (parsed.self && parsed.type === "text") {
-                        document.querySelector('#typing')?.remove();
+                    document.querySelector('#typing')?.remove();
+                    document.querySelector('#responseerror')?.remove();
 
+                    if (parsed.self && parsed.type === "text") {
                         const e = document.querySelector(`#${parsed.hash}`);
 
                         if (e) {
@@ -97,17 +128,63 @@
 
                         p.textContent = parsed.value;
                         p.id = 'typing';
+                        p.classList.add('response');
 
                         document.querySelector('#output').append(p);
-                    } else if (!parsed.self) {
-                        document.querySelector('#typing')?.remove();
+                        scroll();
+                    } else if (!parsed.self && parsed.type === "text") {
+                        const p = document.createElement('div');
 
-                        const p = document.createElement('p');
+                        document.querySelectorAll("#regenerate").forEach(item => {
+                            item.removeEventListener('click', onRegenerate);
+                            item.remove();
+                        });
 
-                        p.textContent = parsed.value;
+                        const btn = document.createElement('button');
+                        btn.textContent = 'Regenerate';
+                        btn.id = 'regenerate';
+                        btn.setAttribute('data-message-id', parsed.hash);
+
+                        const pp = document.createElement('p');
+                        pp.textContent = parsed.value;
+                        pp.setAttribute('data-id', parsed.hash);
                         p.classList.add('message');
+                        p.setAttribute('data-resp', '');
+
+                        btn.addEventListener('click', onRegenerate);
+
+                        p.append(pp, btn);
 
                         document.querySelector('#output').append(p);
+                        scroll();
+                    } else if (parsed.type === 'response_error') {
+                        document.querySelectorAll("#regenerate").forEach(item => {
+                            item.removeEventListener('click', onRegenerate);
+                            item.remove();
+                        });
+
+                        const p = document.createElement('div');
+                        const p1 = document.createElement('p');
+                        p1.textContent = 'Failed to process your request';
+                        const p2 = document.createElement('p');
+                        p2.textContent = 'Or continue chating';
+                        const btn = document.createElement('button');
+                        btn.textContent = 'Try again';
+                        btn.setAttribute('data-request-id', parsed.request_id);
+                        btn.id = 'try-again';
+                        p.append(p1, btn, p2);
+                        p.id = 'responseerror';
+
+                        btn.addEventListener('click', tryRestoreError);
+
+                        document.querySelector('#output').append(p);
+                        scroll();
+                    } else if (!parsed.self && parsed.type === "regenerate_response") {
+                        const q = document.querySelector(`[data-id="${parsed.hash}"]`);
+
+                        if (q) {
+                            q.textContent = parsed.value;
+                        }
                     }
                 }
             }
@@ -181,6 +258,7 @@
             document.querySelector('#output').append(t);
 
             ws.send(JSON.stringify({ type: 'message', value, hash }));
+            scroll();
 
             input.value = '';
         });

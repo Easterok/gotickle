@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	clientCount = 1000
+	clientCount = 10_000
 )
 
 func main() {
@@ -60,9 +60,11 @@ func runClient(clientID int) error {
 	}
 	defer conn.Close()
 
-	messageCount := rand.Intn(200)
+	messageCount := rand.Intn(2000)
 
 	for j := 0; j < messageCount; j++ {
+		time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+
 		msg, _ := json.Marshal(map[string]string{
 			"type":  "message",
 			"value": randomString(10, 100),
@@ -80,7 +82,7 @@ func runClient(clientID int) error {
 
 		// log.Printf("Client %d received\n", clientID)
 
-		time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+		time.Sleep(time.Duration(rand.Intn(10)) * time.Second)
 	}
 
 	return nil
