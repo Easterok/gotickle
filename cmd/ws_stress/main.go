@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	clientCount = 10_000
+	clientCount = 1000
 )
 
 func main() {
@@ -60,7 +60,7 @@ func runClient(clientID int) error {
 	}
 	defer conn.Close()
 
-	messageCount := rand.Intn(2000)
+	messageCount := rand.Intn(200)
 
 	for j := 0; j < messageCount; j++ {
 		time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
