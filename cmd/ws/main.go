@@ -521,10 +521,12 @@ func Start() {
 				}
 				atomic.AddInt64(&statistic.LiveConn, -1)
 				conn.Close()
-				return
+				continue
 			}
 
 			parsed := parseText(msg)
+
+			fmt.Printf("Got message: %s", parsed.Value)
 
 			if parsed == nil {
 				fmt.Printf("unable to parse message %s\n", string(msg))
@@ -546,8 +548,12 @@ func Start() {
 			err = wsutil.WriteServerMessage(conn, op, *resp)
 
 			if err != nil {
+				if err := epoller.Remove(conn); err != nil {
+					log.Printf("Failed to remove %v", err)
+				}
+				atomic.AddInt64(&statistic.LiveConn, -1)
 				conn.Close()
-				return
+				continue
 			}
 		}
 	}
