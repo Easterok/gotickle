@@ -11,8 +11,8 @@ RUN go mod download
 
 COPY . .
 
-RUN go build -ldflags "-s" -o /home/app/bin/ws cmd/ws/main.go
+RUN go build -ldflags "-s" -o /home/app/bin/iter1 cmd/iter1/main.go
 
 EXPOSE 8080
 
-ENTRYPOINT ["/home/app/bin/ws"]
+ENTRYPOINT ["/home/app/bin/iter1"]

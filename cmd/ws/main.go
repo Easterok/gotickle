@@ -9,16 +9,12 @@ import (
 	"net/http"
 	"os"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	_ "net/http/pprof"
 
-	"easterok.github.com/gotickle/pkg/epoll"
 	"easterok.github.com/gotickle/pkg/llm"
 	"easterok.github.com/gotickle/pkg/stats"
-	"github.com/gobwas/ws"
-	"github.com/gobwas/ws/wsutil"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
@@ -33,7 +29,8 @@ const (
 )
 
 var statistic *stats.Stats
-var epoller *epoll.Epoll
+
+// var epoller *epoll.Epoll
 
 var wsUpgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
@@ -430,56 +427,56 @@ func socket(w http.ResponseWriter, r *http.Request) {
 	client.Reader()
 }
 
-func wsSocket(w http.ResponseWriter, r *http.Request) {
-	conn, _, _, err := ws.UpgradeHTTP(r, w)
-	if err != nil {
-		// log.Println(err)
-		return
-	}
-	if err := epoller.Add(conn); err != nil {
-		log.Printf("Failed to add connection %v", err)
-		conn.Close()
-	} else {
-		atomic.AddInt64(&statistic.LiveConn, 1)
-		atomic.AddInt64(&statistic.TotalConn, 1)
-	}
-}
+// func wsSocket(w http.ResponseWriter, r *http.Request) {
+// 	conn, _, _, err := ws.UpgradeHTTP(r, w)
+// 	if err != nil {
+// 		// log.Println(err)
+// 		return
+// 	}
+// 	if err := epoller.Add(conn); err != nil {
+// 		log.Printf("Failed to add connection %v", err)
+// 		conn.Close()
+// 	} else {
+// 		atomic.AddInt64(&statistic.LiveConn, 1)
+// 		atomic.AddInt64(&statistic.TotalConn, 1)
+// 	}
+// }
 
 func main() {
-	var rLimit syscall.Rlimit
-	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rLimit); err != nil {
-		log.Fatal(err)
-	}
-	rLimit.Cur = rLimit.Max
-	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &rLimit); err != nil {
-		log.Fatal(err)
-	}
+	// var rLimit syscall.Rlimit
+	// if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rLimit); err != nil {
+	// 	log.Fatal(err)
+	// }
+	// rLimit.Cur = rLimit.Max
+	// if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &rLimit); err != nil {
+	// 	log.Fatal(err)
+	// }
 
-	var err error
-	epoller, err = epoll.NewEpoll()
+	// var err error
+	// epoller, err = epoll.NewEpoll()
+	// if err != nil {
+	// 	log.Fatal(err)
+	// }
+
+	err := godotenv.Load()
+
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	err = godotenv.Load()
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	statistic = stats.NewStatsWithConfig(stats.StatsConfig{
-		SnapshotInterval: time.Second * 10,
-		SnapshotCallback: func(s *stats.Stats) {
-			fmt.Printf("-----\nTime:%s\nTotalConnections: %d\nLiveConnections: %d\nMessagesSent: %d\nMessagesReceived: %d\nApiErrors: %d\n-----\n", time.Now().UTC().Format("2006-01-02 15:04:05"), s.TotalConn, s.LiveConn, s.MessagesSent, s.MessagesReceived, s.ErrorCount)
-		},
-	})
+	// statistic = stats.NewStatsWithConfig(stats.StatsConfig{
+	// 	SnapshotInterval: time.Second * 10,
+	// 	SnapshotCallback: func(s *stats.Stats) {
+	// 		fmt.Printf("-----\nTime:%s\nTotalConnections: %d\nLiveConnections: %d\nMessagesSent: %d\nMessagesReceived: %d\nApiErrors: %d\n-----\n", time.Now().UTC().Format("2006-01-02 15:04:05"), s.TotalConn, s.LiveConn, s.MessagesSent, s.MessagesReceived, s.ErrorCount)
+	// 	},
+	// })
 
 	port := "8080"
 
-	defer statistic.Stop()
+	// defer statistic.Stop()
 
-	go statistic.Start()
-	go Start()
+	// go statistic.Start()
+	// go Start()
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -495,66 +492,86 @@ func main() {
 		http.ServeFile(w, r, "views/ws.html")
 	})
 
-	http.HandleFunc("/ws", wsSocket)
+	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		c, err := wsUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Print("upgrade:", err)
+			return
+		}
+		defer c.Close()
+		for {
+			_, message, err := c.ReadMessage()
+			if err != nil {
+				log.Println("read:", err)
+				break
+			}
+			log.Printf("recv: %s", message)
+			// err = c.WriteMessage(mt, message)
+			// if err != nil {
+			// 	log.Println("write:", err)
+			// 	break
+			// }
+		}
+	})
 
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))
 }
 
-func Start() {
-	for {
-		connections, err := epoller.Wait()
-		if err != nil {
-			if err != syscall.EINTR {
-				log.Printf("Failed to epoll wait %v", err)
-			}
-			continue
-		}
-		for _, conn := range connections {
-			if conn == nil {
-				break
-			}
-			msg, op, err := wsutil.ReadClientData(conn)
+// func Start() {
+// 	for {
+// 		connections, err := epoller.Wait()
+// 		if err != nil {
+// 			if err != syscall.EINTR {
+// 				log.Printf("Failed to epoll wait %v", err)
+// 			}
+// 			continue
+// 		}
+// 		for _, conn := range connections {
+// 			if conn == nil {
+// 				break
+// 			}
+// 			msg, op, err := wsutil.ReadClientData(conn)
 
-			if err != nil {
-				if err := epoller.Remove(conn); err != nil {
-					log.Printf("Failed to remove %v", err)
-				}
-				atomic.AddInt64(&statistic.LiveConn, -1)
-				conn.Close()
-				continue
-			}
+// 			if err != nil {
+// 				if err := epoller.Remove(conn); err != nil {
+// 					log.Printf("Failed to remove %v", err)
+// 				}
+// 				atomic.AddInt64(&statistic.LiveConn, -1)
+// 				conn.Close()
+// 				continue
+// 			}
 
-			parsed := parseText(msg)
+// 			parsed := parseText(msg)
 
-			// fmt.Printf("Got message: %s", parsed.Value)
+// 			// fmt.Printf("Got message: %s", parsed.Value)
 
-			if parsed == nil {
-				fmt.Printf("unable to parse message %s\n", string(msg))
-				continue
-			}
+// 			if parsed == nil {
+// 				fmt.Printf("unable to parse message %s\n", string(msg))
+// 				continue
+// 			}
 
-			if parsed.Type != "message" {
-				continue
-			}
+// 			if parsed.Type != "message" {
+// 				continue
+// 			}
 
-			atomic.AddInt64(&statistic.MessagesReceived, 1)
+// 			atomic.AddInt64(&statistic.MessagesReceived, 1)
 
-			resp := responseSelfMessage(parsed)
+// 			resp := responseSelfMessage(parsed)
 
-			if resp == nil {
-				continue
-			}
+// 			if resp == nil {
+// 				continue
+// 			}
 
-			err = wsutil.WriteServerMessage(conn, op, *resp)
+// 			err = wsutil.WriteServerMessage(conn, op, *resp)
 
-			if err != nil {
-				if err := epoller.Remove(conn); err != nil {
-					log.Printf("Failed to remove %v", err)
-				}
-				atomic.AddInt64(&statistic.LiveConn, -1)
-				conn.Close()
-				continue
-			}
-		}
-	}
-}
+// 			if err != nil {
+// 				if err := epoller.Remove(conn); err != nil {
+// 					log.Printf("Failed to remove %v", err)
+// 				}
+// 				atomic.AddInt64(&statistic.LiveConn, -1)
+// 				conn.Close()
+// 				continue
+// 			}
+// 		}
+// 	}
+// }
