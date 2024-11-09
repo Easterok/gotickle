@@ -468,7 +468,7 @@ func main() {
 	}
 
 	statistic = stats.NewStatsWithConfig(stats.StatsConfig{
-		SnapshotInterval: time.Minute,
+		SnapshotInterval: time.Second * 10,
 		SnapshotCallback: func(s *stats.Stats) {
 			fmt.Printf("-----\nTime:%s\nTotalConnections: %d\nLiveConnections: %d\nMessagesSent: %d\nMessagesReceived: %d\nApiErrors: %d\n-----\n", time.Now().UTC().Format("2006-01-02 15:04:05"), s.TotalConn, s.LiveConn, s.MessagesSent, s.MessagesReceived, s.ErrorCount)
 		},
@@ -526,7 +526,7 @@ func Start() {
 
 			parsed := parseText(msg)
 
-			fmt.Printf("Got message: %s", parsed.Value)
+			// fmt.Printf("Got message: %s", parsed.Value)
 
 			if parsed == nil {
 				fmt.Printf("unable to parse message %s\n", string(msg))

@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	clientCount = 1000
+	clientCount = 5_000
 )
 
 func main() {
@@ -65,6 +65,8 @@ func runClient(clientID int) error {
 	messageCount := rand.Intn(200)
 
 	for j := 0; j < messageCount; j++ {
+		time.Sleep(time.Millisecond * 10)
+
 		msg, _ := json.Marshal(map[string]string{
 			"type":  "message",
 			"value": randomString(10, 100),
