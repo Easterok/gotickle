@@ -26,6 +26,9 @@ var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	WriteBufferPool: &sync.Pool{},
+	CheckOrigin: func(r *http.Request) bool {
+		return false
+	},
 }
 
 var statistic = stats.NewStatsWithConfig(stats.StatsConfig{
