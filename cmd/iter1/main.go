@@ -27,7 +27,7 @@ var upgrader = websocket.Upgrader{
 	WriteBufferSize: 1024,
 	WriteBufferPool: &sync.Pool{},
 	CheckOrigin: func(r *http.Request) bool {
-		return false
+		return true
 	},
 }
 
