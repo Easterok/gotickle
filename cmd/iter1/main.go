@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	_ "net/http/pprof"
@@ -143,15 +142,6 @@ func serveWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	var rLimit syscall.Rlimit
-	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rLimit); err != nil {
-		log.Fatal(err)
-	}
-	rLimit.Cur = rLimit.Max
-	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &rLimit); err != nil {
-		log.Fatal(err)
-	}
-
 	defer statistic.Stop()
 	go statistic.Start()
 
