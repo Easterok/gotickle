@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	clientCount = 5_000
+	clientCount = 4_000
 )
 
 func main() {
@@ -53,6 +53,8 @@ func randomString(minLen, maxLen int) string {
 }
 
 func runClient(clientID int) error {
+	time.Sleep(time.Millisecond * 50)
+
 	u := fmt.Sprintf("ws://%s/ws", os.Getenv("WS_HOST"))
 	conn, _, err := websocket.DefaultDialer.Dial(u, nil)
 	if err != nil {
@@ -62,7 +64,7 @@ func runClient(clientID int) error {
 
 	fmt.Printf("Running client: %d\n", clientID)
 
-	t := time.NewTicker(time.Second / 2)
+	t := time.NewTicker(time.Second * 2)
 	d := time.NewTicker(time.Minute)
 
 	for {

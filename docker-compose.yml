@@ -1,0 +1,30 @@
+version: "3"
+
+services:
+  api:
+    container_name: iter1_ws
+    restart: always
+    ports:
+      - 127.0.0.1:${API_PORT:-8080}:${API_PORT:-8080}
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    networks:
+      - app_network
+
+  nginx:
+    container_name: nginx
+    restart: always
+    ports:
+      - "80:80"
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    depends_on:
+      - api
+    networks:
+      - app_network
+
+networks:
+  app_network:
+    driver: bridge
