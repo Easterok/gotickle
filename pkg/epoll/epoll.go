@@ -9,10 +9,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+type Client struct {
+	Conn net.Conn
+}
+
 type Epoll struct {
-	fd          int
-	connections map[int]net.Conn
-	lock        *sync.RWMutex
+	fd      int
+	clients map[int]*Client
+	lock    *sync.RWMutex
 }
 
 func NewEpoll() (*Epoll, error) {
@@ -21,37 +25,37 @@ func NewEpoll() (*Epoll, error) {
 		return nil, err
 	}
 	return &Epoll{
-		fd:          fd,
-		lock:        &sync.RWMutex{},
-		connections: make(map[int]net.Conn),
+		fd:      fd,
+		lock:    &sync.RWMutex{},
+		clients: make(map[int]*Client),
 	}, nil
 }
 
-func (e *Epoll) Add(conn net.Conn) error {
-	fd := websocketFD(conn)
+func (e *Epoll) Add(client *Client) error {
+	fd := websocketFD(client.Conn)
 	err := unix.EpollCtl(e.fd, syscall.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: int32(fd)})
 	if err != nil {
 		return err
 	}
 	e.lock.Lock()
 	defer e.lock.Unlock()
-	e.connections[fd] = conn
+	e.clients[fd] = client
 	return nil
 }
 
-func (e *Epoll) Remove(conn net.Conn) error {
-	fd := websocketFD(conn)
+func (e *Epoll) Remove(client *Client) error {
+	fd := websocketFD(client.Conn)
 	err := unix.EpollCtl(e.fd, syscall.EPOLL_CTL_DEL, fd, nil)
 	if err != nil {
 		return err
 	}
 	e.lock.Lock()
 	defer e.lock.Unlock()
-	delete(e.connections, fd)
+	delete(e.clients, fd)
 	return nil
 }
 
-func (e *Epoll) Wait() ([]net.Conn, error) {
+func (e *Epoll) Wait() ([]*Client, error) {
 	events := make([]unix.EpollEvent, 100)
 	n, err := unix.EpollWait(e.fd, events, 100)
 	if err != nil {
@@ -59,12 +63,12 @@ func (e *Epoll) Wait() ([]net.Conn, error) {
 	}
 	e.lock.RLock()
 	defer e.lock.RUnlock()
-	var connections []net.Conn
+	var clients []*Client
 	for i := 0; i < n; i++ {
-		conn := e.connections[int(events[i].Fd)]
-		connections = append(connections, conn)
+		client := e.clients[int(events[i].Fd)]
+		clients = append(clients, client)
 	}
-	return connections, nil
+	return clients, nil
 }
 
 func websocketFD(conn net.Conn) int {

@@ -6,10 +6,12 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "net/http/pprof"
 
+	"easterok.github.com/gotickle/pkg/stats"
 	"github.com/gorilla/websocket"
 )
 
@@ -20,10 +22,17 @@ const (
 )
 
 var upgrader = websocket.Upgrader{
-	ReadBufferSize: 1024,
-	// WriteBufferSize: 1024,
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
 	WriteBufferPool: &sync.Pool{},
 }
+
+var statistic = stats.NewStatsWithConfig(stats.StatsConfig{
+	SnapshotInterval: time.Second * 10,
+	SnapshotCallback: func(s *stats.Stats) {
+		fmt.Printf("-----\nTime:%s\nTotalConnections: %d\nLiveConnections: %d\nMessagesSent: %d\nMessagesReceived: %d\nApiErrors: %d\n-----\n", time.Now().UTC().Format("2006-01-02 15:04:05"), s.TotalConn, s.LiveConn, s.MessagesSent, s.MessagesReceived, s.ErrorCount)
+	},
+})
 
 type Client struct {
 	conn *websocket.Conn
@@ -75,6 +84,8 @@ func (c *Client) write(ctx context.Context) {
 				fmt.Printf("write: %s\n", err.Error())
 				return
 			}
+			atomic.AddInt64(&statistic.MessagesSent, 1)
+
 		case <-pingPong.C:
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
@@ -92,6 +103,8 @@ func (c *Client) read() {
 			fmt.Printf("read: %s\n", err.Error())
 			return
 		}
+		atomic.AddInt64(&statistic.MessagesReceived, 1)
+
 		c.outgoing <- msg
 	}
 }
@@ -110,11 +123,14 @@ func serveWS(w http.ResponseWriter, r *http.Request) {
 			ch <- struct{}{}
 			conn.Close()
 			close(ch)
+			atomic.AddInt64(&statistic.LiveConn, -1)
 		}()
 
 		client := newClient(conn)
 		client.conn.SetReadDeadline(time.Now().Add(pongWait))
 		client.conn.SetPongHandler(func(string) error { client.conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
+		atomic.AddInt64(&statistic.LiveConn, 1)
+		atomic.AddInt64(&statistic.TotalConn, 1)
 
 		go client.write(ctx)
 		client.read()
@@ -122,6 +138,9 @@ func serveWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	defer statistic.Stop()
+	go statistic.Start()
+
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.Error(w, "Not found", http.StatusNotFound)
