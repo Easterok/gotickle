@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	clientCount = 3_000
+	clientCount = 5_000
 )
 
 func main() {
@@ -62,30 +62,28 @@ func runClient(clientID int) error {
 
 	fmt.Printf("Running client: %d\n", clientID)
 
-	messageCount := rand.Intn(200)
+	t := time.NewTicker(time.Second / 2)
+	d := time.NewTicker(time.Minute)
 
-	for j := 0; j < messageCount; j++ {
-		time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+	for {
+		select {
+		case <-d.C:
+			return fmt.Errorf("done")
+		case <-t.C:
+			msg, _ := json.Marshal(map[string]string{
+				"type":  "message",
+				"value": randomString(10, 100),
+				"hash":  randomString(33, 33),
+			})
 
-		msg, _ := json.Marshal(map[string]string{
-			"type":  "message",
-			"value": randomString(10, 100),
-			"hash":  randomString(33, 33),
-		})
+			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				return fmt.Errorf("failed to send message: %w", err)
+			}
 
-		if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-			return fmt.Errorf("failed to send message: %w", err)
+			_, _, err := conn.ReadMessage()
+			if err != nil {
+				return fmt.Errorf("failed to read response: %w", err)
+			}
 		}
-
-		_, _, err := conn.ReadMessage()
-		if err != nil {
-			return fmt.Errorf("failed to read response: %w", err)
-		}
-
-		// log.Printf("Client %d received\n", clientID)
-
-		time.Sleep(time.Duration(rand.Intn(10)) * time.Second)
 	}
-
-	return nil
 }
